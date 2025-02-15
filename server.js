@@ -3,6 +3,7 @@ const TelegramBot = require('node-telegram-bot-api')
 const { Client } = require('@notionhq/client')
 const telegramToken = process.env.TELEGRAM_TOKEN
 const notionToken = process.env.NOTION_TOKEN
+console.log('hello')
 
 // change this to webhooks in production
 const bot = new TelegramBot(telegramToken, { polling: true })
@@ -15,33 +16,7 @@ const {
     SERVICE_PAGE,
 } = require('./lib/contants')
 let categorySelected = ''
-let serviceSelected = ''
-let userInput = {}
 let isBotAskingForInput = false
-
-const confirmInput = (message) => {
-    serviceName = serviceSelected.replace('service_', '')
-
-    const options = {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: 'Confirm', callback_data: 'confirm' },
-                    { text: 'Cancel', callback_data: 'cancel' },
-                ],
-            ],
-        },
-    }
-
-    // make a logic where if the user confirmed, gives redirect
-    bot.sendMessage(
-        message.chat.id,
-        `Confirm this input:\n\n- You selected ${serviceName}.\n-${userInput}.`,
-        options
-    )
-}
-
-console.log('hello world')
 
 const getInput = async (message) => {
     const chatId = message.chat.id
@@ -56,10 +31,9 @@ const getInput = async (message) => {
         )
     }
 
-    userInput = senderMessage
-
     if (!isMessageSpecialCommands) {
-        confirmInput(message)
+        // prcoess order
+        bot.sendMessage(chatId, senderMessage)
     }
 }
 
@@ -75,8 +49,7 @@ bot.onText(/\/services/, async (msg) => {
             ]),
         },
     }
-
-    return await bot.sendMessage(chatId, 'Select a service category: ', options)
+    await bot.sendMessage(chatId, 'Select a service category: ', options)
 })
 
 bot.on('callback_query', async (callbackQuery) => {
@@ -105,7 +78,6 @@ bot.on('callback_query', async (callbackQuery) => {
     }
 
     isBotAskingForInput = true
-    serviceSelected = selectedData
 
     if (categorySelected === 'Spies') {
         return await bot.sendMessage(
@@ -114,27 +86,27 @@ bot.on('callback_query', async (callbackQuery) => {
         )
     }
 
-    if (SERVICE_ACCOUNT_ID.includes(serviceSelected)) {
+    if (SERVICE_ACCOUNT_ID.includes(selectedData)) {
         return await bot.sendMessage(chatId, `Please enter the Ad Account ID.`)
     }
 
-    if (serviceSelected === 'service_Profile') {
+    if (selectedData === 'service_Profile') {
         return await bot.sendMessage(chatId, 'Please enter the Profile link.')
     }
 
-    if (SERVICE_PAGE.includes(serviceSelected)) {
+    if (SERVICE_PAGE.includes(selectedData)) {
         return await bot.sendMessage(chatId, 'Please enter the Page link.')
     }
 
-    if (serviceSelected === 'service_BM') {
+    if (selectedData === 'service_BM') {
         return await bot.sendMessage(chatId, 'Please enter BM ID.')
     }
 
-    if (serviceSelected === 'service_Per Ad') {
+    if (selectedData === 'service_Per Ad') {
         return await bot.sendMessage(chatId, 'Please enter Ad ID.')
     }
 
-    if (!SERVICES[serviceSelected]) {
+    if (!SERVICES[selectedData]) {
         return await bot.sendMessage(
             chatId,
             'Invalid selected input, please type /start again.'
@@ -145,11 +117,9 @@ bot.on('callback_query', async (callbackQuery) => {
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id
     categorySelected = ''
-    serviceSelected = ''
-    userInput = ''
     isBotAskingForInput = false
 
-    return await bot.sendMessage(
+    await bot.sendMessage(
         chatId,
         "Welcome to Test Blight Stone Bot, \n\ntype '/services' to start"
     )
