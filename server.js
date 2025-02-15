@@ -18,6 +18,28 @@ const {
 let categorySelected = ''
 let isBotAskingForInput = false
 
+const confirmInput = (message) => {
+    serviceName = serviceSelected.replace('service_', '')
+
+    const options = {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: 'Confirm', callback_data: 'confirm' },
+                    { text: 'Cancel', callback_data: 'cancel' },
+                ],
+            ],
+        },
+    }
+
+    // TODO: make a logic where if the user confirmed, it opens the payment gateay
+    bot.sendMessage(
+        message.chat.id,
+        `Confirm this input:\n\n- You selected ${serviceName}.\n-${userInput}.`,
+        options
+    )
+}
+
 const getInput = async (message) => {
     const chatId = message.chat.id
     const senderName = message.from.first_name
@@ -32,8 +54,7 @@ const getInput = async (message) => {
     }
 
     if (!isMessageSpecialCommands) {
-        // prcoess order
-        bot.sendMessage(chatId, senderMessage)
+        confirmInput(message)
     }
 }
 
