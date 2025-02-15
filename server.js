@@ -33,15 +33,13 @@ const confirmInput = (message) => {
         },
     }
 
-    // make a logic where if the user confirmed, gives redirect
+    // TODO: make a logic where if the user confirmed, it opens the payment gateay
     bot.sendMessage(
         message.chat.id,
         `Confirm this input:\n\n- You selected ${serviceName}.\n-${userInput}.`,
         options
     )
 }
-
-console.log('hello world')
 
 const getInput = async (message) => {
     const chatId = message.chat.id
