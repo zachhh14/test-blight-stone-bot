@@ -40,23 +40,20 @@ const temporaryFunction = async (callbackQuery) => {
 }
 
 const createPayment = async (chatId, callbackQueryId) => {
-    // Build the payment payload. Removed the webhook property since we're not using webhooks.
+    // temporary variable
     const paymentPayload = {
-        amount: 100, // example amount
+        amount: 100,
         currency: 'USDT',
         // URL that ZeroCryptoPay should call after payment is processed
         callback_url: 'https://yourdomain.com/payment/callback',
-        // URL to redirect user after successful payment
         success_url: 'https://yourdomain.com/payment/success',
-        // URL to redirect user after failed payment
         error_url: 'https://yourdomain.com/payment/error',
-        // Additional metadata (e.g., chat id, order id, etc.)
         metadata: {
             chatId,
-            orderId: 'your-order-id', // Replace or generate dynamically
+            orderId: 'your-order-id', // TODO: Replace or generate dynamically
         },
-        token: ZCP_TOKEN, // Include token in the payload
-        secret_key: ZCP_SECRET_KEY, // Include secret key in the payload
+        token: ZCP_TOKEN,
+        secret_key: ZCP_SECRET_KEY,
     }
 
     try {
@@ -72,14 +69,13 @@ const createPayment = async (chatId, callbackQueryId) => {
             }
         )
 
-        console.log('response: ', response.data)
         const paymentUrl = response.data.payment_url
 
         await bot.sendMessage(
             chatId,
             `Please complete your payment by clicking the link below:\n${paymentUrl}`
         )
-        // Answer the callback query to remove the loading spinner on Telegram
+
         await bot.answerCallbackQuery(callbackQueryId)
     } catch (error) {
         console.error(
@@ -96,7 +92,6 @@ const createPayment = async (chatId, callbackQueryId) => {
 }
 
 const confirmInput = (message) => {
-    // Ensure we declare our variables properly
     const serviceName = serviceSelected.replace('service_', '')
     const userInput = message.text
 
@@ -155,11 +150,11 @@ bot.onText(/\/services/, async (msg) => {
 bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id
     const selectedData = callbackQuery.data
-    
+
     // this is only temporary
     if (selectedData === 'yes') {
-        // store in notionRequest
-        return 
+        // TODO: store in notionRequest
+        return
     }
 
     if (selectedData === 'confirm') {
