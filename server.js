@@ -3,25 +3,92 @@ const TelegramBot = require('node-telegram-bot-api')
 const { Client } = require('@notionhq/client')
 const axios = require('axios')
 
-const telegramToken = process.env.TELEGRAM_TOKEN
-const notionToken = process.env.NOTION_TOKEN
-const ZCP_SECRET_KEY = process.env.ZCP_SECRET_KEY
-const ZCP_TOKEN = process.env.ZCP_TOKEN
-
-// change this to webhooks in production
-const bot = new TelegramBot(telegramToken, { polling: true })
-const notion = new Client({ auth: notionToken })
-
 const {
     SERVICES,
     SPECIAL_COMMANDS,
     SERVICE_ACCOUNT_ID,
     SERVICE_PAGE,
-} = require('./lib/contants')
+    TELEGRAM_TOKEN,
+    NOTION_TOKEN,
+    NOTION_DATABASE_ID,
+    ZCP_SECRET_KEY,
+    ZCP_TOKEN,
+} = require('./lib/constants')
 
-let categorySelected = ''
-let serviceSelected = ''
+// TODO: change this to webhooks in production
+const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true })
+const notion = new Client({ auth: NOTION_TOKEN })
+
+let userState = {
+    categorySelected: '',
+    serviceSelected: '',
+    userInfo: '',
+}
+
 let isBotAskingForInput = false
+
+const notionRequest = async () => {
+    const isUrl = userState.userInfo.startsWith('http')
+
+    try {
+        const response = await notion.pages.create({
+            parent: { database_id: NOTION_DATABASE_ID },
+            properties: {
+                Name: {
+                    title: [{ text: { content: userState.serviceSelected } }],
+                },
+                Category: {
+                    select: { name: userState.categorySelected },
+                },
+                Price: {
+                    number: 1000, // TODO: make this dynamic
+                },
+                'Ordered By': {
+                    rich_text: [
+                        {
+                            text: {
+                                content: `User ID: ${1}`,
+                            },
+                        },
+                    ],
+                },
+                'User Info': {
+                    rich_text: isUrl
+                        ? [
+                              {
+                                  text: { content: 'Ad Account ID: ' },
+                              },
+                              {
+                                  text: {
+                                      content: userState.userInfo,
+                                      link: { url: userState.userInfo },
+                                  },
+                              },
+                          ]
+                        : [
+                              {
+                                  text: {
+                                      content: `Ad Account ID: ${userState.userInfo}`,
+                                  },
+                              },
+                          ],
+                },
+                Timestamp: {
+                    date: { start: new Date().toISOString() },
+                },
+            },
+        })
+        console.log('Order saved to Notion: ', response.id)
+
+        return response
+    } catch (error) {
+        console.error(error.message)
+        console.error(error)
+
+        throw error
+    }
+
+}
 
 const temporaryFunction = async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id
@@ -29,8 +96,8 @@ const temporaryFunction = async (callbackQuery) => {
         reply_markup: {
             inline_keyboard: [
                 [
-                    { text: 'Yes', callback_data: 'yes' },
                     { text: 'No', callback_data: 'no' },
+                    { text: 'Yes', callback_data: 'yes' },
                 ],
             ],
         },
@@ -92,15 +159,16 @@ const createPayment = async (chatId, callbackQueryId) => {
 }
 
 const confirmInput = (message) => {
-    const serviceName = serviceSelected.replace('service_', '')
+    const serviceName = userState.serviceSelected.replace('service_', '')
     const userInput = message.text
+    userState.userInfo = userInput
 
     const options = {
         reply_markup: {
             inline_keyboard: [
                 [
-                    { text: 'Confirm', callback_data: 'confirm' },
                     { text: 'Cancel', callback_data: 'cancel' },
+                    { text: 'Confirm', callback_data: 'confirm' },
                 ],
             ],
         },
@@ -140,11 +208,12 @@ bot.onText(/\/services/, async (msg) => {
     const options = {
         reply_markup: {
             inline_keyboard: Object.keys(SERVICES).map((category) => [
-                { text: category, callback_data: category },
+                { text: category, callback_data: `${category}` },
             ]),
         },
     }
-    await bot.sendMessage(chatId, 'Select a service category: ', options)
+
+    return await bot.sendMessage(chatId, 'Select a service category: ', options)
 })
 
 bot.on('callback_query', async (callbackQuery) => {
@@ -154,6 +223,7 @@ bot.on('callback_query', async (callbackQuery) => {
     // this is only temporary
     if (selectedData === 'yes') {
         // TODO: store in notionRequest
+        notionRequest()
         return
     }
 
@@ -180,46 +250,51 @@ bot.on('callback_query', async (callbackQuery) => {
             },
         }
 
-        categorySelected = selectedData
+        userState = {
+            categorySelected: selectedData,
+        }
+
+        userState.categorySelected = selectedData
 
         return await bot.sendMessage(
             chatId,
-            `Select a specific service in ${categorySelected},\ntype '/services' if you want go back to Main Menu`,
+            `Select a specific service in ${userState.categorySelected},\ntype '/services' if you want go back to Main Menu`,
             options
         )
     }
 
     isBotAskingForInput = true
-    serviceSelected = selectedData
 
-    if (categorySelected === 'Spies') {
+    userState.serviceSelected = selectedData
+
+    if (userState.categorySelected === 'Spies') {
         return await bot.sendMessage(
             chatId,
             'Please enter the Ad Library Link.'
         )
     }
 
-    if (SERVICE_ACCOUNT_ID.includes(serviceSelected)) {
+    if (SERVICE_ACCOUNT_ID.includes(userState.serviceSelected)) {
         return await bot.sendMessage(chatId, 'Please enter the Ad Account ID.')
     }
 
-    if (serviceSelected === 'service_Profile') {
+    if (userState.serviceSelected === 'service_Profile') {
         return await bot.sendMessage(chatId, 'Please enter the Profile link.')
     }
 
-    if (SERVICE_PAGE.includes(serviceSelected)) {
+    if (SERVICE_PAGE.includes(userState.serviceSelected)) {
         return await bot.sendMessage(chatId, 'Please enter the Page link.')
     }
 
-    if (serviceSelected === 'service_BM') {
+    if (userState.serviceSelected === 'service_BM') {
         return await bot.sendMessage(chatId, 'Please enter BM ID.')
     }
 
-    if (serviceSelected === 'service_Per Ad') {
+    if (userState.serviceSelected === 'service_Per Ad') {
         return await bot.sendMessage(chatId, 'Please enter Ad ID.')
     }
 
-    if (!SERVICES[serviceSelected]) {
+    if (!SERVICES[userState.serviceSelected]) {
         return await bot.sendMessage(
             chatId,
             'Invalid selected input, please type /start again.'
@@ -230,7 +305,7 @@ bot.on('callback_query', async (callbackQuery) => {
 function startBot() {
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id
-        categorySelected = ''
+        userState.categorySelected = ''
         isBotAskingForInput = false
 
         await bot.sendMessage(
