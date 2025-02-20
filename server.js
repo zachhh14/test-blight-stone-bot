@@ -2,6 +2,7 @@ require('dotenv').config()
 const TelegramBot = require('node-telegram-bot-api')
 const { Client } = require('@notionhq/client')
 const axios = require('axios')
+const { ZeroCryptoPay } = require('zerocryptopay')
 
 const {
     SERVICES,
@@ -87,7 +88,6 @@ const notionRequest = async () => {
 
         throw error
     }
-
 }
 
 const temporaryFunction = async (callbackQuery) => {
@@ -107,54 +107,55 @@ const temporaryFunction = async (callbackQuery) => {
 }
 
 const createPayment = async (chatId, callbackQueryId) => {
-    // temporary variable
-    const paymentPayload = {
+    const LOGIN = 'blightstone@pm.me'
+    const SECRET_KEY_FROM_DASHBOARD = ZCP_SECRET_KEY
+    const TOKEN_FROM_DASHBOARD = ZCP_TOKEN
+
+    const signatureData = {
+        login: LOGIN,
         amount: 100,
-        currency: 'USDT',
-        // URL that ZeroCryptoPay should call after payment is processed
-        callback_url: 'https://yourdomain.com/payment/callback',
-        success_url: 'https://yourdomain.com/payment/success',
-        error_url: 'https://yourdomain.com/payment/error',
-        metadata: {
-            chatId,
-            orderId: 'your-order-id', // TODO: Replace or generate dynamically
-        },
-        token: ZCP_TOKEN,
-        secret_key: ZCP_SECRET_KEY,
+        secretKey: SECRET_KEY_FROM_DASHBOARD,
+        orderId: Date.now(),
     }
 
-    try {
-        const response = await axios.post(
-            'https://Zerocryptopay.com/pay/newtrack/',
-            paymentPayload,
-            {
-                headers: {
-                    Authorization: `Bearer ${ZCP_TOKEN}`,
-                    'X-Secret-Key': ZCP_SECRET_KEY,
-                    'Content-Type': 'application/json',
-                },
-            }
-        )
+    const signature = ZeroCryptoPay.createSign(signatureData)
 
-        const paymentUrl = response.data.payment_url
-
-        await bot.sendMessage(
-            chatId,
-            `Please complete your payment by clicking the link below:\n${paymentUrl}`
-        )
-
-        await bot.answerCallbackQuery(callbackQueryId)
-    } catch (error) {
-        console.error(
-            'Error creating payment:',
-            error.response ? error.response.data : error.message
-        )
-        await bot.sendMessage(
-            chatId,
-            'There was an error processing your payment. Please try again later.'
-        )
-        await bot.answerCallbackQuery(callbackQueryId)
+    const orderData = {
+        ...signatureData,
+        token: TOKEN_FROM_DASHBOARD,
+        signature,
     }
+
+    console.log(orderData)
+
+    const order = await ZeroCryptoPay.createOrder(orderData)
+
+    if (order.status === false) {
+        console.log('something went wrong while creating an order', order)
+        return
+    }
+
+    console.log('redirect your client to', order.url_to_pay)
+
+    // ZeroCryptoPay.checkOrder
+    const checkOrderSign = ZeroCryptoPay.createCheckOrderSign({
+        token: TOKEN_FROM_DASHBOARD,
+        transactionHash: order.hash_trans,
+        secretKey: SECRET_KEY_FROM_DASHBOARD,
+        trackingId: order.id,
+        login: LOGIN,
+    })
+
+    const orderStatus = await ZeroCryptoPay.checkOrder({
+        trackingId: order.id,
+        signature: checkOrderSign,
+        token: TOKEN_FROM_DASHBOARD,
+        transactionHash: order.hash_trans,
+        login: LOGIN,
+    })
+
+    console.log('orderStatus', orderStatus)
+
     return
 }
 
@@ -230,8 +231,8 @@ bot.on('callback_query', async (callbackQuery) => {
     if (selectedData === 'confirm') {
         await bot.sendMessage(chatId, 'processing please wait')
 
-        return temporaryFunction(callbackQuery)
-        // return createPayment(chatId, callbackQuery.id) figure out how to implement this
+        // return temporaryFunction(callbackQuery)
+        return createPayment(chatId, callbackQuery.id)
     }
 
     if (selectedData === 'cancel') {
