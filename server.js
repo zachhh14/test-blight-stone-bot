@@ -24,12 +24,13 @@ let userState = {
     categorySelected: '',
     serviceSelected: '',
     userInfo: '',
+    servicePrice: 0,
 }
 
 let isBotAskingForInput = false
 let isTransactionInProcess = false
 
-const notionRequest = async () => {
+const notionRequest = async (paymentUrl) => {
     const isUrl = userState.userInfo.startsWith('http')
 
     try {
@@ -43,7 +44,7 @@ const notionRequest = async () => {
                     select: { name: userState.categorySelected },
                 },
                 Price: {
-                    number: 1000, // TODO: make this dynamic
+                    number: userState.servicePrice,
                 },
                 'Ordered By': {
                     rich_text: [
@@ -75,6 +76,9 @@ const notionRequest = async () => {
                               },
                           ],
                 },
+                'Payment URL:': {
+                    url: paymentUrl,
+                },
                 Timestamp: {
                     date: { start: new Date().toISOString() },
                 },
@@ -97,17 +101,9 @@ const createPayment = async (chatId) => {
     const SECRET_KEY_FROM_DASHBOARD = ZCP_SECRET_KEY
     const TOKEN_FROM_DASHBOARD = ZCP_TOKEN
 
-    // user selected service
-    const serviceName = userState.serviceSelected.replace('service_', '')
-    const servicePrice = Object.values(SERVICES)
-        .flat()
-        .find((service) => service.name === serviceName)?.price
-
-    console.log(serviceName, servicePrice)
-
     const signatureData = {
         login: LOGIN,
-        amount: 100,
+        amount: userState.servicePrice,
         secretKey: SECRET_KEY_FROM_DASHBOARD,
         orderId: Date.now(),
     }
@@ -176,11 +172,9 @@ const createPayment = async (chatId) => {
                 login: LOGIN,
             })
 
-            console.log('Payment status:', orderStatus)
-
             if (orderStatus && orderStatus.status === 'paid') {
                 try {
-                    await notionRequest()
+                    await notionRequest(order.url_to_pay)
                     await bot.sendMessage(
                         chatId,
                         'Payment received! Your order has been processed.'
@@ -229,6 +223,8 @@ const confirmInput = (message) => {
         .find((service) => service.name === serviceName)?.price
     const userInput = message.text
     userState.userInfo = userInput
+
+    userState.servicePrice = servicePrice
 
     const options = {
         reply_markup: {
