@@ -1,7 +1,8 @@
 require('dotenv').config()
 const TelegramBot = require('node-telegram-bot-api')
 const { Client } = require('@notionhq/client')
-const axios = require('axios')
+const { ZeroCryptoPay } = require('zerocryptopay')
+const QRCode = require('qrcode')
 
 const {
     SERVICES,
@@ -26,6 +27,7 @@ let userState = {
 }
 
 let isBotAskingForInput = false
+let isTransactionInProcess = false
 
 const notionRequest = async () => {
     const isUrl = userState.userInfo.startsWith('http')
@@ -87,79 +89,144 @@ const notionRequest = async () => {
 
         throw error
     }
-
 }
 
-const temporaryFunction = async (callbackQuery) => {
-    const chatId = callbackQuery.message.chat.id
-    const options = {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: 'No', callback_data: 'no' },
-                    { text: 'Yes', callback_data: 'yes' },
-                ],
-            ],
-        },
-    }
+const createPayment = async (chatId) => {
+    bot.sendMessage(chatId, 'Creating payment...')
+    const LOGIN = 'blightstone@pm.me'
+    const SECRET_KEY_FROM_DASHBOARD = ZCP_SECRET_KEY
+    const TOKEN_FROM_DASHBOARD = ZCP_TOKEN
 
-    return await bot.sendMessage(chatId, 'Nagbayad ka na?', options)
-}
+    // user selected service
+    const serviceName = userState.serviceSelected.replace('service_', '')
+    const servicePrice = Object.values(SERVICES)
+        .flat()
+        .find((service) => service.name === serviceName)?.price
 
-const createPayment = async (chatId, callbackQueryId) => {
-    // temporary variable
-    const paymentPayload = {
+    console.log(serviceName, servicePrice)
+
+    const signatureData = {
+        login: LOGIN,
         amount: 100,
-        currency: 'USDT',
-        // URL that ZeroCryptoPay should call after payment is processed
-        callback_url: 'https://yourdomain.com/payment/callback',
-        success_url: 'https://yourdomain.com/payment/success',
-        error_url: 'https://yourdomain.com/payment/error',
-        metadata: {
-            chatId,
-            orderId: 'your-order-id', // TODO: Replace or generate dynamically
-        },
-        token: ZCP_TOKEN,
-        secret_key: ZCP_SECRET_KEY,
+        secretKey: SECRET_KEY_FROM_DASHBOARD,
+        orderId: Date.now(),
     }
 
     try {
-        const response = await axios.post(
-            'https://Zerocryptopay.com/pay/newtrack/',
-            paymentPayload,
-            {
-                headers: {
-                    Authorization: `Bearer ${ZCP_TOKEN}`,
-                    'X-Secret-Key': ZCP_SECRET_KEY,
-                    'Content-Type': 'application/json',
-                },
+        const signature = ZeroCryptoPay.createSign(signatureData)
+        const orderData = {
+            ...signatureData,
+            token: TOKEN_FROM_DASHBOARD,
+            signature,
+        }
+
+        const order = await ZeroCryptoPay.createOrder(orderData)
+
+        if (!order || order.status === false) {
+            console.log('something went wrong while creating an order', order)
+            return bot.sendMessage(
+                chatId,
+                'Failed to create payment. Please try again.'
+            )
+        }
+
+        // TODO: make the `url_to_pay` shorter, probably by tinyurl or bitly
+
+        try {
+            const qrBuffer = await QRCode.toBuffer(order.url_to_pay, {
+                width: 250, // Set a fixed width (will maintain square ratio)
+                margin: 1, // Minimal white margin around QR
+                scale: 8, // Scale factor for QR modules
+                errorCorrectionLevel: 'H', // Highest error correction level
+            })
+            await bot.sendPhoto(chatId, qrBuffer, {
+                caption: `Make a payment by scanning this QR code or clicking this link:\n${order.url_to_pay}.\n\nYou have 20 attempts.`,
+            })
+        } catch (error) {
+            console.error('Error generating QR code:', error)
+            await bot.sendMessage(
+                chatId,
+                `Make a payment to ${order.url_to_pay}`
+            )
+        }
+
+        const checkOrderSign = ZeroCryptoPay.createCheckOrderSign({
+            token: TOKEN_FROM_DASHBOARD,
+            transactionHash: order.hash_trans,
+            secretKey: SECRET_KEY_FROM_DASHBOARD,
+            trackingId: order.id,
+            login: LOGIN,
+        })
+
+        let attempts = 20
+        const checkPayment = async () => {
+            if (attempts <= 0) {
+                await bot.sendMessage(
+                    chatId,
+                    'Payment time expired. Please try again.'
+                )
+                return
             }
-        )
 
-        const paymentUrl = response.data.payment_url
+            const orderStatus = await ZeroCryptoPay.checkOrder({
+                trackingId: order.id,
+                signature: checkOrderSign,
+                token: TOKEN_FROM_DASHBOARD,
+                transactionHash: order.hash_trans,
+                login: LOGIN,
+            })
 
-        await bot.sendMessage(
-            chatId,
-            `Please complete your payment by clicking the link below:\n${paymentUrl}`
-        )
+            console.log('Payment status:', orderStatus)
 
-        await bot.answerCallbackQuery(callbackQueryId)
+            if (orderStatus && orderStatus.status === 'paid') {
+                try {
+                    await notionRequest()
+                    await bot.sendMessage(
+                        chatId,
+                        'Payment received! Your order has been processed.'
+                    )
+                } catch (error) {
+                    console.error('Error storing in Notion: ', error)
+                    await bot.sendMessage(
+                        chatId,
+                        'Payment received but there was an error processing your order. Please contact support.'
+                    )
+                }
+                return
+            }
+            if (orderStatus && orderStatus.status === 'expired') {
+                await bot.sendMessage(
+                    chatId,
+                    'Payment expired. Please try again.'
+                )
+                startBot(chatId)
+
+                return
+            }
+            attempts--
+            await bot.sendMessage(
+                chatId,
+                `Waiting for payment... ${attempts} attempts remaining.\nChecking again in 30 seconds.`
+            )
+            setTimeout(checkPayment, 30000) // Check again in 30 seconds
+        }
+
+        // Start checking for payment
+        checkPayment()
     } catch (error) {
-        console.error(
-            'Error creating payment:',
-            error.response ? error.response.data : error.message
-        )
-        await bot.sendMessage(
+        console.error(error)
+        return bot.sendMessage(
             chatId,
-            'There was an error processing your payment. Please try again later.'
+            'Something went wrong while creating a payment'
         )
-        await bot.answerCallbackQuery(callbackQueryId)
     }
-    return
 }
 
 const confirmInput = (message) => {
     const serviceName = userState.serviceSelected.replace('service_', '')
+    const servicePrice = Object.values(SERVICES)
+        .flat()
+        .find((service) => service.name === serviceName)?.price
     const userInput = message.text
     userState.userInfo = userInput
 
@@ -177,7 +244,7 @@ const confirmInput = (message) => {
     // Ask the user to confirm their input
     bot.sendMessage(
         message.chat.id,
-        `Confirm this input:\n\n- You selected ${serviceName}.\n- ${userInput}.`,
+        `Confirm this input:\n\n- You selected ${serviceName}\n- Price: ${servicePrice} USDT\n- ${userInput}`,
         options
     )
 }
@@ -191,7 +258,14 @@ const getInput = async (message) => {
     if (!isBotAskingForInput && !isMessageSpecialCommands) {
         return await bot.sendMessage(
             chatId,
-            `I didn’t get that, ${senderName}. Start by typing /start`
+            `I didn't get that, ${senderName}. Start by typing /start`
+        )
+    }
+
+    if (isTransactionInProcess) {
+        return await bot.sendMessage(
+            chatId,
+            'Transaction is already in process. Please wait for it to complete.'
         )
     }
 
@@ -220,22 +294,24 @@ bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id
     const selectedData = callbackQuery.data
 
-    // this is only temporary
-    if (selectedData === 'yes') {
-        // TODO: store in notionRequest
-        notionRequest()
-        return
+    if (isTransactionInProcess) {
+        return await bot.sendMessage(
+            chatId,
+            'Transaction is already in process'
+        )
     }
 
     if (selectedData === 'confirm') {
+        isTransactionInProcess = true
         await bot.sendMessage(chatId, 'processing please wait')
 
-        return temporaryFunction(callbackQuery)
-        // return createPayment(chatId, callbackQuery.id) figure out how to implement this
+        return createPayment(chatId)
     }
 
     if (selectedData === 'cancel') {
-        // TODO: make a logic where it gets back to main menu
+        isBotAskingForInput = false
+        await bot.sendMessage(chatId, 'cancelled')
+        return startBot(chatId)
     }
 
     if (!selectedData.startsWith('service_')) {
@@ -302,19 +378,17 @@ bot.on('callback_query', async (callbackQuery) => {
     }
 })
 
-function startBot() {
-    bot.onText(/\/start/, async (msg) => {
-        const chatId = msg.chat.id
-        userState.categorySelected = ''
-        isBotAskingForInput = false
+bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id
+    userState.categorySelected = ''
+    isBotAskingForInput = false
 
-        await bot.sendMessage(
-            chatId,
-            "Welcome to Test Blight Stone Bot, \n\ntype '/services' to start"
-        )
-    })
-}
+    startBot(chatId)
+})
 
-if (process.env.NOTION_TOKEN && process.env.NOTION_TOKEN) {
-    startBot()
+const startBot = async (chatId) => {
+    await bot.sendMessage(
+        chatId,
+        "Welcome to Test Blight Stone Bot, \n\ntype '/services' to start"
+    )
 }
