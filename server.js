@@ -1,8 +1,8 @@
 require('dotenv').config()
 const TelegramBot = require('node-telegram-bot-api')
 const { Client } = require('@notionhq/client')
-const axios = require('axios')
 const { ZeroCryptoPay } = require('zerocryptopay')
+const QRCode = require('qrcode')
 
 const {
     SERVICES,
@@ -27,6 +27,7 @@ let userState = {
 }
 
 let isBotAskingForInput = false
+let isTransactionInProcess = false
 
 const notionRequest = async () => {
     const isUrl = userState.userInfo.startsWith('http')
@@ -90,26 +91,19 @@ const notionRequest = async () => {
     }
 }
 
-const temporaryFunction = async (callbackQuery) => {
-    const chatId = callbackQuery.message.chat.id
-    const options = {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: 'No', callback_data: 'no' },
-                    { text: 'Yes', callback_data: 'yes' },
-                ],
-            ],
-        },
-    }
-
-    return await bot.sendMessage(chatId, 'Nagbayad ka na?', options)
-}
-
-const createPayment = async (chatId, callbackQueryId) => {
+const createPayment = async (chatId) => {
+    bot.sendMessage(chatId, 'Creating payment...')
     const LOGIN = 'blightstone@pm.me'
     const SECRET_KEY_FROM_DASHBOARD = ZCP_SECRET_KEY
     const TOKEN_FROM_DASHBOARD = ZCP_TOKEN
+
+    // user selected service
+    const serviceName = userState.serviceSelected.replace('service_', '')
+    const servicePrice = Object.values(SERVICES)
+        .flat()
+        .find((service) => service.name === serviceName)?.price
+
+    console.log(serviceName, servicePrice)
 
     const signatureData = {
         login: LOGIN,
@@ -118,49 +112,119 @@ const createPayment = async (chatId, callbackQueryId) => {
         orderId: Date.now(),
     }
 
-    const signature = ZeroCryptoPay.createSign(signatureData)
+    try {
+        const signature = ZeroCryptoPay.createSign(signatureData)
+        const orderData = {
+            ...signatureData,
+            token: TOKEN_FROM_DASHBOARD,
+            signature,
+        }
 
-    const orderData = {
-        ...signatureData,
-        token: TOKEN_FROM_DASHBOARD,
-        signature,
+        const order = await ZeroCryptoPay.createOrder(orderData)
+
+        if (!order || order.status === false) {
+            console.log('something went wrong while creating an order', order)
+            return bot.sendMessage(
+                chatId,
+                'Failed to create payment. Please try again.'
+            )
+        }
+
+        try {
+            const qrBuffer = await QRCode.toBuffer(order.url_to_pay, {
+                width: 250, // Set a fixed width (will maintain square ratio)
+                margin: 1, // Minimal white margin around QR
+                scale: 8, // Scale factor for QR modules
+                errorCorrectionLevel: 'H', // Highest error correction level
+            })
+            await bot.sendPhoto(chatId, qrBuffer, {
+                caption: `Make a payment by scanning this QR code or clicking this link:\n${order.url_to_pay}.\n\nYou have 20 attempts.`,
+            })
+        } catch (error) {
+            console.error('Error generating QR code:', error)
+            await bot.sendMessage(
+                chatId,
+                `Make a payment to ${order.url_to_pay}`
+            )
+        }
+
+        const checkOrderSign = ZeroCryptoPay.createCheckOrderSign({
+            token: TOKEN_FROM_DASHBOARD,
+            transactionHash: order.hash_trans,
+            secretKey: SECRET_KEY_FROM_DASHBOARD,
+            trackingId: order.id,
+            login: LOGIN,
+        })
+
+        let attempts = 20
+        const checkPayment = async () => {
+            if (attempts <= 0) {
+                await bot.sendMessage(
+                    chatId,
+                    'Payment time expired. Please try again.'
+                )
+                return
+            }
+
+            const orderStatus = await ZeroCryptoPay.checkOrder({
+                trackingId: order.id,
+                signature: checkOrderSign,
+                token: TOKEN_FROM_DASHBOARD,
+                transactionHash: order.hash_trans,
+                login: LOGIN,
+            })
+
+            console.log('Payment status:', orderStatus)
+
+            if (orderStatus && orderStatus.status === 'paid') {
+                try {
+                    await notionRequest()
+                    await bot.sendMessage(
+                        chatId,
+                        'Payment received! Your order has been processed.'
+                    )
+                } catch (error) {
+                    console.error('Error storing in Notion: ', error)
+                    await bot.sendMessage(
+                        chatId,
+                        'Payment received but there was an error processing your order. Please contact support.'
+                    )
+                }
+                return
+            }
+            if (orderStatus && orderStatus.status === 'expired') {
+                await bot.sendMessage(
+                    chatId,
+                    'Payment expired. Please try again.'
+                )
+                startBot(chatId)
+
+                return
+            }
+            attempts--
+            await bot.sendMessage(
+                chatId,
+                `Waiting for payment... ${attempts} attempts remaining.\nChecking again in 30 seconds.`
+            )
+            setTimeout(checkPayment, 30000) // Check again in 30 seconds
+        }
+
+        // Start checking for payment
+        checkPayment()
+    } catch (error) {
+        console.error(error)
+        return bot.sendMessage(
+            chatId,
+            'Something went wrong while creating a payment'
+        )
     }
-
-    console.log(orderData)
-
-    const order = await ZeroCryptoPay.createOrder(orderData)
-
-    if (order.status === false) {
-        console.log('something went wrong while creating an order', order)
-        return
-    }
-
-    console.log('redirect your client to', order.url_to_pay)
-
-    // ZeroCryptoPay.checkOrder
-    const checkOrderSign = ZeroCryptoPay.createCheckOrderSign({
-        token: TOKEN_FROM_DASHBOARD,
-        transactionHash: order.hash_trans,
-        secretKey: SECRET_KEY_FROM_DASHBOARD,
-        trackingId: order.id,
-        login: LOGIN,
-    })
-
-    const orderStatus = await ZeroCryptoPay.checkOrder({
-        trackingId: order.id,
-        signature: checkOrderSign,
-        token: TOKEN_FROM_DASHBOARD,
-        transactionHash: order.hash_trans,
-        login: LOGIN,
-    })
-
-    console.log('orderStatus', orderStatus)
-
-    return
 }
 
 const confirmInput = (message) => {
     const serviceName = userState.serviceSelected.replace('service_', '')
+    const servicePrice = Object.values(SERVICES)
+        .flat()
+        .find((service) => service.name === serviceName)?.price
     const userInput = message.text
     userState.userInfo = userInput
 
@@ -178,7 +242,7 @@ const confirmInput = (message) => {
     // Ask the user to confirm their input
     bot.sendMessage(
         message.chat.id,
-        `Confirm this input:\n\n- You selected ${serviceName}.\n- ${userInput}.`,
+        `Confirm this input:\n\n- You selected ${serviceName}\n- Price: ${servicePrice} USDT\n- ${userInput}`,
         options
     )
 }
@@ -192,7 +256,14 @@ const getInput = async (message) => {
     if (!isBotAskingForInput && !isMessageSpecialCommands) {
         return await bot.sendMessage(
             chatId,
-            `I didn’t get that, ${senderName}. Start by typing /start`
+            `I didn't get that, ${senderName}. Start by typing /start`
+        )
+    }
+
+    if (isTransactionInProcess) {
+        return await bot.sendMessage(
+            chatId,
+            'Transaction is already in process. Please wait for it to complete.'
         )
     }
 
@@ -221,22 +292,24 @@ bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id
     const selectedData = callbackQuery.data
 
-    // this is only temporary
-    if (selectedData === 'yes') {
-        // TODO: store in notionRequest
-        notionRequest()
-        return
+    if (isTransactionInProcess) {
+        return await bot.sendMessage(
+            chatId,
+            'Transaction is already in process'
+        )
     }
 
     if (selectedData === 'confirm') {
+        isTransactionInProcess = true
         await bot.sendMessage(chatId, 'processing please wait')
 
-        // return temporaryFunction(callbackQuery)
-        return createPayment(chatId, callbackQuery.id)
+        return createPayment(chatId)
     }
 
     if (selectedData === 'cancel') {
-        // TODO: make a logic where it gets back to main menu
+        isBotAskingForInput = false
+        await bot.sendMessage(chatId, 'cancelled')
+        return startBot(chatId)
     }
 
     if (!selectedData.startsWith('service_')) {
@@ -303,19 +376,17 @@ bot.on('callback_query', async (callbackQuery) => {
     }
 })
 
-function startBot() {
-    bot.onText(/\/start/, async (msg) => {
-        const chatId = msg.chat.id
-        userState.categorySelected = ''
-        isBotAskingForInput = false
+bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id
+    userState.categorySelected = ''
+    isBotAskingForInput = false
 
-        await bot.sendMessage(
-            chatId,
-            "Welcome to Test Blight Stone Bot, \n\ntype '/services' to start"
-        )
-    })
-}
+    startBot(chatId)
+})
 
-if (process.env.NOTION_TOKEN && process.env.NOTION_TOKEN) {
-    startBot()
+const startBot = async (chatId) => {
+    await bot.sendMessage(
+        chatId,
+        "Welcome to Test Blight Stone Bot, \n\ntype '/services' to start"
+    )
 }
