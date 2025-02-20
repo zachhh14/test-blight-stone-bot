@@ -119,7 +119,7 @@ const createPayment = async (chatId) => {
         const order = await ZeroCryptoPay.createOrder(orderData)
 
         if (!order || order.status === false) {
-            console.log('something went wrong while creating an order', order)
+            console.error('something went wrong while creating an order', order)
             return bot.sendMessage(
                 chatId,
                 'Failed to create payment. Please try again.'
