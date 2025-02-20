@@ -130,6 +130,8 @@ const createPayment = async (chatId) => {
             )
         }
 
+        // TODO: make the `url_to_pay` shorter, probably by tinyurl or bitly
+
         try {
             const qrBuffer = await QRCode.toBuffer(order.url_to_pay, {
                 width: 250, // Set a fixed width (will maintain square ratio)
